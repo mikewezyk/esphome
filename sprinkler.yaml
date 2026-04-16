@@ -1,0 +1,70 @@
+esphome:
+  name: sprinkler
+
+esp32:
+  board: nodemcu-32s
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  password: ""
+
+ota:
+  - platform: esphome
+    password: ""
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Sprinkler Fallback Hotspot"
+    password: !secret sprinkler_ap_password
+
+captive_portal:
+    
+sprinkler:
+  - id: lawn_sprinkler_ctrlr
+    main_switch: "Lawn Sprinklers"
+    auto_advance_switch: "Lawn Sprinklers Auto Advance"
+    reverse_switch: "Lawn Sprinklers Reverse"
+    valve_open_delay: 5s
+    valves:
+      - valve_switch: "Backyard Corner Zone"
+        enable_switch: "Enable Backyard Corner Zone"
+        pump_switch_id: sprinkler_pump_sw
+        run_duration: 900s
+        valve_switch_id: lawn_sprinkler_valve_sw0
+      - valve_switch: "Backyard Center Zone"
+        enable_switch: "Enable ackyard Center Zone"
+        pump_switch_id: sprinkler_pump_sw
+        run_duration: 900s
+        valve_switch_id: lawn_sprinkler_valve_sw1
+      - valve_switch: "Backyard Drip Zone"
+        enable_switch: "Enable Backyard Drip Zone"
+        pump_switch_id: sprinkler_pump_sw
+        run_duration: 900s
+        valve_switch_id: lawn_sprinkler_valve_sw2
+
+switch:
+  - platform: gpio
+    id: sprinkler_pump_sw
+    inverted: true
+    pin: GPIO32
+  - platform: gpio
+    id: lawn_sprinkler_valve_sw0
+    inverted: true
+    pin: GPIO33
+  - platform: gpio
+    id: lawn_sprinkler_valve_sw1
+    inverted: true
+    pin: GPIO25
+  - platform: gpio
+    id: lawn_sprinkler_valve_sw2
+    inverted: true
+    pin: GPIO26    
