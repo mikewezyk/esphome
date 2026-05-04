@@ -11,6 +11,8 @@ logger:
 
 # Enable Home Assistant API
 api:
+  encryption:
+    key: !secret erv_api_key
   services:
     - service: sen55_clean
       then:
