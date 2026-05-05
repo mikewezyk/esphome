@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Mike Wezyk. Licensed under CC BY-NC-SA 4.0.
+# SEN55 sensor configuration is adapted from Apollo Automation AIR-1 — see erv_sen55.yaml.
+
 esphome:
   name: erv
 
@@ -32,7 +35,15 @@ wifi:
     password: !secret erv_ap_password
 
 captive_portal:
-    
+
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  id: bus_a
+
+packages:
+  sen55: !include erv_sen55.yaml
+
 switch:
   - platform: gpio
     pin: GPIO26
@@ -45,150 +56,133 @@ switch:
     name: erv_power
     id: erv_power
 
-i2c:
-  sda: GPIO21
-  scl: GPIO22
-  id: bus_a
+  - platform: template
+    name: "ERV AQ Protection"
+    id: erv_aq_protection
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
 
 number:
   - platform: template
-    name: SEN55 Temperature Offset
-    id: sen55_temperature_offset
+    name: "ERV PM2.5 Shutoff Threshold"
+    id: erv_pm25_shutoff_threshold
     restore_value: true
-    initial_value: 6.0
-    min_value: -70.0
-    max_value: 70.0
+    initial_value: 35
+    min_value: 5
+    max_value: 150
     entity_category: "CONFIG"
-    unit_of_measurement: "°C"
+    unit_of_measurement: "µg/m³"
     optimistic: true
     update_interval: never
-    step: 0.1
+    step: 1
     mode: box
   - platform: template
-    name: SEN55 Humidity Offset
-    id: sen55_humidity_offset
+    name: "ERV PM2.5 Resume Threshold"
+    id: erv_pm25_resume_threshold
     restore_value: true
-    initial_value: 0
-    min_value: -70.0
-    max_value: 70.0
+    initial_value: 20
+    min_value: 5
+    max_value: 150
     entity_category: "CONFIG"
-    unit_of_measurement: "%"
+    unit_of_measurement: "µg/m³"
     optimistic: true
     update_interval: never
-    step: 0.1
+    step: 1
+    mode: box
+  - platform: template
+    name: "ERV VOC Shutoff Threshold"
+    id: erv_voc_shutoff_threshold
+    restore_value: true
+    initial_value: 200
+    min_value: 50
+    max_value: 500
+    entity_category: "CONFIG"
+    unit_of_measurement: "index"
+    optimistic: true
+    update_interval: never
+    step: 1
+    mode: box
+  - platform: template
+    name: "ERV VOC Resume Threshold"
+    id: erv_voc_resume_threshold
+    restore_value: true
+    initial_value: 150
+    min_value: 50
+    max_value: 500
+    entity_category: "CONFIG"
+    unit_of_measurement: "index"
+    optimistic: true
+    update_interval: never
+    step: 1
+    mode: box
+  - platform: template
+    name: "ERV NOx Shutoff Threshold"
+    id: erv_nox_shutoff_threshold
+    restore_value: true
+    initial_value: 25
+    min_value: 1
+    max_value: 500
+    entity_category: "CONFIG"
+    unit_of_measurement: "index"
+    optimistic: true
+    update_interval: never
+    step: 1
+    mode: box
+  - platform: template
+    name: "ERV NOx Resume Threshold"
+    id: erv_nox_resume_threshold
+    restore_value: true
+    initial_value: 15
+    min_value: 1
+    max_value: 500
+    entity_category: "CONFIG"
+    unit_of_measurement: "index"
+    optimistic: true
+    update_interval: never
+    step: 1
     mode: box
 
-sensor:
-  - platform: sen5x
-    id: sen55
-    pm_1_0:
-      name: "PM <1µm Weight concentration"
-      id: pm_1_0
-      accuracy_decimals: 1
-    pm_2_5:
-      name: "PM <2.5µm Weight concentration"
-      id: pm_2_5
-      accuracy_decimals: 1
-    pm_4_0:
-      name: "PM <4µm Weight concentration"
-      id: pm_4_0
-      accuracy_decimals: 1
-    pm_10_0:
-      name: "PM <10µm Weight concentration"
-      id: pm_10_0
-      accuracy_decimals: 1
-    temperature:
-      name: "SEN55 Temperature"
-      accuracy_decimals: 1
-      filters:
-        - lambda: return x - id(sen55_temperature_offset).state;
-    humidity:
-      name: "SEN55 Humidity"
-      filters:
-        - lambda: return x - id(sen55_humidity_offset).state;
-      accuracy_decimals: 0
-    voc:
-      name: "SEN55 VOC"
-      id: sen55_voc
-      algorithm_tuning:
-        #https://sensirion.com/media/documents/25AB572C/62B463AA/Sensirion_Engineering_Guidelines_SEN5x.pdf
-        index_offset: 100
-        learning_time_offset_hours: 72
-        learning_time_gain_hours: 72
-        gating_max_duration_minutes: 180
-        std_initial: 50
-        gain_factor: 230
-    nox:
-      name: "SEN55 NOX"
-      id: sen55_nox
-    acceleration_mode: low
-    store_baseline: true
-    address: 0x69
-    update_interval: 10s    
+script:
+  # Evaluates current sensor readings against thresholds on every sensor update.
+  # Starts the debounce timer if elevated; resumes ERV immediately if all-clear.
+  - id: erv_aq_check
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(erv_aq_protection).state && (
+                id(pm_2_5).state    > id(erv_pm25_shutoff_threshold).state ||
+                id(sen55_voc).state > id(erv_voc_shutoff_threshold).state  ||
+                id(sen55_nox).state > id(erv_nox_shutoff_threshold).state
+              );
+          then:
+            - script.execute: erv_aq_debounce
+          else:
+            - if:
+                condition:
+                  lambda: |-
+                    return id(pm_2_5).state    < id(erv_pm25_resume_threshold).state &&
+                           id(sen55_voc).state < id(erv_voc_resume_threshold).state  &&
+                           id(sen55_nox).state < id(erv_nox_resume_threshold).state;
+                then:
+                  - switch.turn_on: erv_power
 
-  - platform: template
-    name: "PM 0.3 To 1 µm"
-    id: pm0_3_to_1
-    disabled_by_default: true
-    lambda: return id(pm_1_0).state;
-    unit_of_measurement: "µg/m³"
-    state_class: measurement
-    icon: mdi:air-filter
-    update_interval: 10s
-  
-  - platform: template
-    name: "PM 1 To 2.5 µm"
-    id: pm1_to_2_5
-    disabled_by_default: true
-    lambda: return id(pm_2_5).state - id(pm_1_0).state;
-    unit_of_measurement: "µg/m³"
-    state_class: measurement
-    icon: mdi:air-filter
-    update_interval: 10s
-  
-  - platform: template
-    name: "PM 2.5 To 4 µm"
-    id: pm2_5_to_4
-    disabled_by_default: true
-    lambda: return id(pm_4_0).state - id(pm_2_5).state;
-    unit_of_measurement: "µg/m³"
-    state_class: measurement
-    icon: mdi:air-filter
-    update_interval: 10s
-
-  - platform: template
-    name: "PM 4 To 10 µm"
-    id: pm4_to_10
-    disabled_by_default: true
-    lambda: return id(pm_10_0).state - id(pm_4_0).state;
-    unit_of_measurement: "µg/m³"
-    icon: mdi:air-filter
-    update_interval: 10s
-
-button:
-  - platform: template
-    name: "Clean SEN55"
-    id: clean_sen55
-    on_press:
-      - sen5x.start_fan_autoclean: sen55
-
-
-text_sensor:
-    # Convert VOC Index To Text: 
-    # https://sensirion.com/media/documents/02232963/6294E043/Info_Note_VOC_Index.pdf
-    # https://sensirion.com/media/documents/ACD82D45/6294DFC0/Info_Note_Integration_VOC_NOx_Sensor.pdf
-  - platform: template
-    name: "VOC Quality"
-    id: voc_quality
-    icon: mdi:air-filter
-    lambda: |-
-      if (id(sen55_voc).state < 80) {
-        return std::string("Improved");} 
-      else if (id(sen55_voc).state < 150) {
-        return std::string("Normal");} 
-      else if (id(sen55_voc).state < 250) {
-        return std::string("Abnormal");} 
-      else if (id(sen55_voc).state < 400) {
-        return std::string("Very abnormal");} 
-      else {
-        return std::string("Extremely abnormal");}      
+  # Waits 60s before acting — filters out brief SEN55 autoclean PM spikes (~10s).
+  # mode: single means a spike that resolves mid-countdown won't restart the timer;
+  # on expiry it re-checks current readings before shutting off.
+  - id: erv_aq_debounce
+    mode: single
+    then:
+      - delay: 60s
+      - if:
+          condition:
+            lambda: |-
+              return id(erv_aq_protection).state && (
+                id(pm_2_5).state    > id(erv_pm25_shutoff_threshold).state ||
+                id(sen55_voc).state > id(erv_voc_shutoff_threshold).state  ||
+                id(sen55_nox).state > id(erv_nox_shutoff_threshold).state
+              );
+          then:
+            - switch.turn_off: erv_boost
+            - switch.turn_off: erv_power
