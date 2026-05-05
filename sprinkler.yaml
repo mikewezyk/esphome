@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Mike Wezyk. Licensed under CC BY-NC-SA 4.0.
+
 esphome:
   name: sprinkler
 
@@ -40,17 +42,38 @@ sprinkler:
       - valve_switch: "Backyard Corner Zone"
         enable_switch: "Enable Backyard Corner Zone"
         pump_switch_id: sprinkler_pump_sw
-        run_duration: 900s
+        run_duration_number:
+          name: "Backyard Corner Zone Duration"
+          initial_value: 900
+          min_value: 1
+          max_value: 1800
+          step: 1
+          unit_of_measurement: s
+          restore_value: true
         valve_switch_id: lawn_sprinkler_valve_sw0
       - valve_switch: "Backyard Center Zone"
-        enable_switch: "Enable ackyard Center Zone"
+        enable_switch: "Enable Backyard Center Zone"
         pump_switch_id: sprinkler_pump_sw
-        run_duration: 900s
+        run_duration_number:
+          name: "Backyard Center Zone Duration"
+          initial_value: 900
+          min_value: 1
+          max_value: 1800
+          step: 1
+          unit_of_measurement: s
+          restore_value: true
         valve_switch_id: lawn_sprinkler_valve_sw1
       - valve_switch: "Backyard Drip Zone"
         enable_switch: "Enable Backyard Drip Zone"
         pump_switch_id: sprinkler_pump_sw
-        run_duration: 900s
+        run_duration_number:
+          name: "Backyard Drip Zone Duration"
+          initial_value: 900
+          min_value: 1
+          max_value: 3600
+          step: 1
+          unit_of_measurement: s
+          restore_value: true
         valve_switch_id: lawn_sprinkler_valve_sw2
 
 switch:
