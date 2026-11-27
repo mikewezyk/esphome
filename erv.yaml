@@ -1,8 +1,49 @@
 # Copyright (c) 2026 Mike Wezyk. Licensed under CC BY-NC-SA 4.0.
 # SEN55 sensor configuration is adapted from Apollo Automation AIR-1 — see erv_sen55.yaml.
 
-esphome:
+# Energy Recovery Ventilator (ERV) controller with SEN55 air-quality protection.
+# See README.md for wiring, behavior, and the thresholds exposed to Home Assistant.
+
+substitutions:
   name: erv
+  friendly_name: ERV   # Only used for the fallback hotspot name
+
+  # --- Pins (NodeMCU-32S) ---
+  power_pin: GPIO25   # ERV power relay (active low)
+  boost_pin: GPIO26   # ERV boost relay
+  sda_pin: GPIO21     # SEN55 I2C
+  scl_pin: GPIO22
+
+esphome:
+  name: ${name}
+  on_boot:
+    # Run after all components initialize (priority -100 = last).
+    # Ensures erv_power is on after any reboot, UNLESS the SEN55 is healthy
+    # and has already detected a real AQ problem during this boot cycle.
+    # This restores pre-SEN55 behavior: ERV always runs unless actively shut
+    # off by a confirmed AQ event. A failed/unavailable SEN55 is never a
+    # reason to leave the ERV off.
+    priority: -100
+    then:
+      - delay: 3s
+      - if:
+          condition:
+            lambda: |-
+              // Only skip turning on if AQ protection is active AND the SEN55
+              // has valid (non-nan) readings AND they are over threshold.
+              // Any other situation (SEN55 failed, protection disabled,
+              // readings normal) → turn ERV on.
+              bool sen55_healthy = !isnan(id(pm_2_5).state) &&
+                                   !isnan(id(sen55_voc).state) &&
+                                   !isnan(id(sen55_nox).state);
+              bool aq_tripped = sen55_healthy && id(erv_aq_protection).state && (
+                id(pm_2_5).state    > id(erv_pm25_shutoff_threshold).state ||
+                id(sen55_voc).state > id(erv_voc_shutoff_threshold).state  ||
+                id(sen55_nox).state > id(erv_nox_shutoff_threshold).state
+              );
+              return !aq_tripped;
+          then:
+            - switch.turn_on: erv_power
 
 esp32:
   board: nodemcu-32s
@@ -23,22 +64,23 @@ api:
 
 ota:
   - platform: esphome
-    password: ""
+    password: !secret erv_ota_password
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  min_auth_mode: WPA2
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: "Erv Fallback Hotspot"
+    ssid: "${friendly_name} Fallback"
     password: !secret erv_ap_password
 
 captive_portal:
 
 i2c:
-  sda: GPIO21
-  scl: GPIO22
+  sda: ${sda_pin}
+  scl: ${scl_pin}
   id: bus_a
 
 packages:
@@ -46,15 +88,21 @@ packages:
 
 switch:
   - platform: gpio
-    pin: GPIO26
+    pin: ${boost_pin}
     name: erv_boost
     id: erv_boost
+    restore_mode: RESTORE_DEFAULT_OFF
 
   - platform: gpio
-    pin: GPIO25
-    inverted: true
+    pin:
+      number: ${power_pin}
+      inverted: true
     name: erv_power
     id: erv_power
+    # RESTORE_DEFAULT_ON: restores last known state on reboot, defaults to on
+    # if no saved state. The on_boot script above handles the AQ-protection
+    # exception so this never leaves the ERV stranded off after a reboot.
+    restore_mode: RESTORE_DEFAULT_ON
 
   - platform: template
     name: "ERV AQ Protection"
@@ -144,13 +192,23 @@ number:
 
 script:
   # Evaluates current sensor readings against thresholds on every sensor update.
-  # Starts the debounce timer if elevated; resumes ERV immediately if all-clear.
+  # Guards against NaN (SEN55 failed/unavailable): if any reading is NaN the
+  # sensor is considered offline and AQ protection is skipped entirely —
+  # the ERV keeps running. Only acts on confirmed numeric readings.
   - id: erv_aq_check
     mode: single
     then:
       - if:
           condition:
             lambda: |-
+              // If SEN55 has no valid data, bail out immediately.
+              // A broken sensor must never cause the ERV to shut off or
+              // prevent it from turning back on.
+              if (isnan(id(pm_2_5).state) ||
+                  isnan(id(sen55_voc).state) ||
+                  isnan(id(sen55_nox).state)) {
+                return false;
+              }
               return id(erv_aq_protection).state && (
                 id(pm_2_5).state    > id(erv_pm25_shutoff_threshold).state ||
                 id(sen55_voc).state > id(erv_voc_shutoff_threshold).state  ||
@@ -162,6 +220,17 @@ script:
             - if:
                 condition:
                   lambda: |-
+                    // Only send the "resume" turn-on if:
+                    // 1. AQ protection is active (otherwise ERV state is managed
+                    //    manually / by HA automations — don't interfere), AND
+                    // 2. SEN55 has valid readings (not nan), AND
+                    // 3. All readings are below their resume thresholds.
+                    // This prevents the script from fighting manual off commands
+                    // when AQ protection is disabled.
+                    if (!id(erv_aq_protection).state) return false;
+                    if (isnan(id(pm_2_5).state) ||
+                        isnan(id(sen55_voc).state) ||
+                        isnan(id(sen55_nox).state)) return false;
                     return id(pm_2_5).state    < id(erv_pm25_resume_threshold).state &&
                            id(sen55_voc).state < id(erv_voc_resume_threshold).state  &&
                            id(sen55_nox).state < id(erv_nox_resume_threshold).state;
@@ -171,6 +240,7 @@ script:
   # Waits 60s before acting — filters out brief SEN55 autoclean PM spikes (~10s).
   # mode: single means a spike that resolves mid-countdown won't restart the timer;
   # on expiry it re-checks current readings before shutting off.
+  # NaN guard here too: if sensor went offline mid-debounce, abort the shutoff.
   - id: erv_aq_debounce
     mode: single
     then:
@@ -178,6 +248,12 @@ script:
       - if:
           condition:
             lambda: |-
+              // Abort if SEN55 went offline during the debounce window.
+              if (isnan(id(pm_2_5).state) ||
+                  isnan(id(sen55_voc).state) ||
+                  isnan(id(sen55_nox).state)) {
+                return false;
+              }
               return id(erv_aq_protection).state && (
                 id(pm_2_5).state    > id(erv_pm25_shutoff_threshold).state ||
                 id(sen55_voc).state > id(erv_voc_shutoff_threshold).state  ||

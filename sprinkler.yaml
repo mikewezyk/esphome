@@ -1,7 +1,20 @@
 # Copyright (c) 2026 Mike Wezyk. Licensed under CC BY-NC-SA 4.0.
 
-esphome:
+# Lawn irrigation controller: 3 zones sharing one pump, using ESPHome's built-in
+# `sprinkler` controller. See README.md for wiring.
+
+substitutions:
   name: sprinkler
+  friendly_name: Sprinkler   # Only used for the fallback hotspot name
+
+  # --- Pins (NodeMCU-32S). All relay outputs are active low. ---
+  pump_pin: GPIO32
+  zone1_pin: GPIO33   # Backyard Corner
+  zone2_pin: GPIO25   # Backyard Center
+  zone3_pin: GPIO26   # Backyard Drip
+
+esphome:
+  name: ${name}
 
 esp32:
   board: nodemcu-32s
@@ -18,20 +31,21 @@ api:
 
 ota:
   - platform: esphome
-    password: ""
+    password: !secret sprinkler_ota_password
 
 wifi:
   power_save_mode: none
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  min_auth_mode: WPA2
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: "Sprinkler Fallback Hotspot"
+    ssid: "${friendly_name} Fallback"
     password: !secret sprinkler_ap_password
 
 captive_portal:
-    
+
 sprinkler:
   - id: lawn_sprinkler_ctrlr
     main_switch: "Lawn Sprinklers"
@@ -77,19 +91,29 @@ sprinkler:
         valve_switch_id: lawn_sprinkler_valve_sw2
 
 switch:
+  # Fail safe: every relay is forced off after a reboot or power loss, so a
+  # crash can never leave the pump or a valve running.
   - platform: gpio
     id: sprinkler_pump_sw
-    inverted: true
-    pin: GPIO32
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: ${pump_pin}
+      inverted: true
   - platform: gpio
     id: lawn_sprinkler_valve_sw0
-    inverted: true
-    pin: GPIO33
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: ${zone1_pin}
+      inverted: true
   - platform: gpio
     id: lawn_sprinkler_valve_sw1
-    inverted: true
-    pin: GPIO25
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: ${zone2_pin}
+      inverted: true
   - platform: gpio
     id: lawn_sprinkler_valve_sw2
-    inverted: true
-    pin: GPIO26    
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: ${zone3_pin}
+      inverted: true

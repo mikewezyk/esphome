@@ -1,4 +1,16 @@
-# Gitignore settings for ESPHome
-CLAUDE.md
+# ESPHome build output
 /.esphome/
+.pioenvs/
+.piolibdeps/
+
+# Secrets - never commit. Copy secrets.example.yaml to secrets.yaml.
 /secrets.yaml
+
+# Local tooling / AI assistant context
+CLAUDE.md
+.claude/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
