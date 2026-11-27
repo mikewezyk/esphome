@@ -1,60 +1,86 @@
 # Copyright (c) 2026 Mike Wezyk. Licensed under CC BY-NC-SA 4.0.
+#
+# Makeup Air System (MUAS)
+# Watches the 0-10V speed signal of an ECM range-hood fan and drives a
+# proportional 0-10V makeup-air fan plus a 24V damper relay.
+# See README.md for wiring and calibration.
+
+substitutions:
+  name: muas
+  friendly_name: Makeup Air   # Only used for the fallback hotspot name
+
+  # --- Tuning ---
+  max_voltage: "10"                 # Exhaust fan signal voltage at 100% speed
+  exhaust_fan_threshold_low: "2"    # Below this voltage (V) the system is idle
+  makeup_air_fan_max_speed: "30"    # Makeup fan speed (%) when exhaust is at max_voltage.
+                                    # Calibrate with a manometer so indoor/outdoor
+                                    # differential pressure is ~0 Pa.
+  damper_open_delay: 10s            # Let the damper open before the fan starts
+  # Voltage divider on the ADC input: (R_top + R_bottom) / R_bottom scaled for
+  # the ESP32 3.3V range. 3.1757 = (49254 / 47000) * (10 / 3.3). Recompute if
+  # you change the resistors.
+  adc_multiplier: "3.1757"
+
+  # --- Pins (NodeMCU-32S) ---
+  adc_pin: GPIO36        # Exhaust fan 0-10V signal, through a voltage divider
+  fan_pwm_pin: GPIO25    # PWM to 0-10V converter for the makeup air ECM fan
+  damper_pin: GPIO26     # Relay for the 24V damper (active low)
 
 esphome:
-  name: muas
+  name: ${name}
 
 esp32:
   board: nodemcu-32s
   framework:
     type: arduino
 
-# Enable logging
 logger:
 
-# Enable Home Assistant API
 api:
   encryption:
     key: !secret muas_api_key
 
 ota:
   - platform: esphome
-    password: ""
+    password: !secret muas_ota_password
 
 wifi:
-  ssid: !secret "wifi_ssid"
-  password: !secret "wifi_password"
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  min_auth_mode: WPA2
+  # Fallback hotspot (captive portal) if the Wi-Fi connection fails
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret muas_ap_password
 
 captive_portal:
 
-substitutions:
-  max_voltage: "10"
-  exhaust_fan_threshold_low: "2"
-  makuep_air_fan_max_speed: "30"
-
 switch:
   - platform: gpio
-    pin: GPIO26
-    inverted: true
+    pin:
+      number: ${damper_pin}
+      inverted: true
     name: Makeup Air Damper
     id: makeup_air_damper
- 
+    # Fail safe: damper stays closed after a reboot until the script opens it.
+    restore_mode: ALWAYS_OFF
+
 sensor:
   - platform: adc
-    pin: GPIO36
+    pin: ${adc_pin}
     id: exhaust_hood_voltage
     name: "Exhaust Hood Voltage"
     update_interval: 5s
     attenuation: auto
     filters:
-      # (49254/47000) * (10 / 3.3)
-      - multiply: 3.1757
+      - multiply: ${adc_multiplier}
     on_value:
       then:
-        - script.execute: set_fan_state 
+        - script.execute: set_fan_state
 
 output:
   - platform: ledc
-    pin: GPIO25
+    pin: ${fan_pwm_pin}
     id: makeup_air_fan_pwm_output
     frequency: 3000Hz
 
@@ -63,44 +89,34 @@ fan:
     output: makeup_air_fan_pwm_output
     id: makeup_air_fan
     name: Makeup Air Fan
+    restore_mode: ALWAYS_OFF
 
 script:
   - id: set_fan_state
+    # restart: if the hood is switched off during the damper delay, the pending
+    # "start fan" is cancelled instead of the new "turn off" being ignored.
+    mode: restart
     then:
       - if:
           condition:
             lambda: |-
-              return id(exhaust_hood_voltage).state < id(${exhaust_fan_threshold_low});
+              // Treat a failed ADC read (NaN) as "hood off" so we fail safe.
+              float v = id(exhaust_hood_voltage).state;
+              return isnan(v) || v < ${exhaust_fan_threshold_low};
           then:
             - fan.turn_off: makeup_air_fan
             - switch.turn_off: makeup_air_damper
           else:
             - switch.turn_on: makeup_air_damper
-            - delay: 10s
+            - delay: ${damper_open_delay}
             - fan.turn_on:
-                id:  makeup_air_fan
+                id: makeup_air_fan
                 speed: !lambda |-
-                  float calc_speed = id(exhaust_hood_voltage).state / id(${max_voltage}) * id(${makuep_air_fan_max_speed}) * 1.0;
-                  ESP_LOGD("Makeup Air Fan Speed Calc", "calculated speed = %f", calc_speed);
-                  return calc_speed;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+                  // Linear map: exhaust voltage -> 0..max_speed percent.
+                  float ratio = id(exhaust_hood_voltage).state / ${max_voltage};
+                  if (ratio > 1.0f) ratio = 1.0f;
+                  int speed = (int) (ratio * ${makeup_air_fan_max_speed});
+                  if (speed < 1) speed = 1;
+                  ESP_LOGD("muas", "exhaust=%.2fV -> makeup fan speed=%d%%",
+                           id(exhaust_hood_voltage).state, speed);
+                  return speed;
